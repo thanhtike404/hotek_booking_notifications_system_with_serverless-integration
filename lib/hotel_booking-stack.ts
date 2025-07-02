@@ -1,15 +1,16 @@
-import { Stack, StackProps, Duration } from "aws-cdk-lib";
+import { Stack, StackProps, Duration, RemovalPolicy } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import {
   WebSocketApi,
   WebSocketStage,
-  WebSocketRouteIntegration,
 } from "aws-cdk-lib/aws-apigatewayv2";
 import { WebSocketLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import {
   Function,
   Runtime,
   Code,
+  LayerVersion,
 } from "aws-cdk-lib/aws-lambda";
 import { Table, AttributeType, BillingMode } from "aws-cdk-lib/aws-dynamodb";
 import { PolicyStatement } from "aws-cdk-lib/aws-iam";
@@ -22,6 +23,12 @@ export class WebSocketNotificationStack extends Stack {
     const connectionsTable = new Table(this, "ConnectionsTable", {
       partitionKey: { name: "connectionId", type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
+    connectionsTable.addGlobalSecondaryIndex({
+      indexName: 'userId-index',
+      partitionKey: { name: 'userId', type: AttributeType.STRING },
     });
 
     // Lambda function for connect
@@ -44,7 +51,7 @@ export class WebSocketNotificationStack extends Stack {
       },
     });
 
-      const defaultHandler = new Function(this, "DefaultHandler", {
+    const defaultHandler = new Function(this, "DefaultHandler", {
       runtime: Runtime.NODEJS_18_X,
       handler: "default.handler",
       code: Code.fromAsset("./dist/lambda"),
@@ -63,11 +70,23 @@ export class WebSocketNotificationStack extends Stack {
       },
     });
 
+    // Lambda function for sending notifications
+    const sendNotificationHandler = new NodejsFunction(this, "SendNotificationHandler", {
+      runtime: Runtime.NODEJS_18_X,
+      entry: "lambda/sendNotification.ts",
+      depsLockFilePath: "package-lock.json",
+      environment: {
+        TABLE_NAME: connectionsTable.tableName,
+        DATABASE_URL: process.env.DATABASE_URL!,
+      },
+    });
+
     // Grant permissions to lambdas
     connectionsTable.grantReadWriteData(connectHandler);
     connectionsTable.grantReadWriteData(disconnectHandler);
     connectionsTable.grantReadWriteData(messageHandler);
-        connectionsTable.grantReadWriteData(defaultHandler);
+    connectionsTable.grantReadWriteData(defaultHandler);
+    connectionsTable.grantReadWriteData(sendNotificationHandler);
 
     // Allow Lambda to call API Gateway management API
     const apiPermission = new PolicyStatement({
@@ -76,6 +95,7 @@ export class WebSocketNotificationStack extends Stack {
     });
 
     messageHandler.addToRolePolicy(apiPermission);
+    sendNotificationHandler.addToRolePolicy(apiPermission);
 
     // WebSocket API
     const wsApi = new WebSocketApi(this, "WebSocketAPI", {
@@ -90,6 +110,14 @@ export class WebSocketNotificationStack extends Stack {
     // Custom route: sendMessage
     wsApi.addRoute("sendMessage", {
       integration: new WebSocketLambdaIntegration("MessageIntegration", messageHandler),
+    });
+
+    // Custom route: sendNotification
+    wsApi.addRoute("sendNotification", {
+      integration: new WebSocketLambdaIntegration(
+        "SendNotificationIntegration",
+        sendNotificationHandler
+      ),
     });
 
     // WebSocket Stage
