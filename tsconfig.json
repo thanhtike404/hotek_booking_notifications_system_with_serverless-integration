@@ -1,11 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "lib": [
-      "es2022"
-    ],
+    "module": "commonjs",                          // ✅ Required for Lambda
+    "moduleResolution": "node",                   // ✅ Standard Node resolution
+    "outDir": "./dist/lambda",
+    "esModuleInterop": true,
+    "lib": ["es2022"],
     "declaration": true,
     "strict": true,
     "noImplicitAny": true,
@@ -20,12 +20,8 @@
     "inlineSources": true,
     "experimentalDecorators": true,
     "strictPropertyInitialization": false,
-    "typeRoots": [
-      "./node_modules/@types"
-    ]
+    "typeRoots": ["./node_modules/@types"]
   },
-  "exclude": [
-    "node_modules",
-    "cdk.out"
-  ]
+  "exclude": ["node_modules", "cdk.out"],
+  "include": ["lambda/**/*.ts"]
 }
