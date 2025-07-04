@@ -120,6 +120,11 @@ export class WebSocketNotificationStack extends Stack {
       ),
     });
 
+    wsApi.addRoute("$default", {
+  integration: new WebSocketLambdaIntegration("DefaultIntegration", defaultHandler),
+});
+sendNotificationHandler.addEnvironment('WEBSOCKET_ENDPOINT', wsApi.apiEndpoint);
+
     // WebSocket Stage
     new WebSocketStage(this, "DevStage", {
       webSocketApi: wsApi,
