@@ -80,6 +80,15 @@ export class WebSocketNotificationStack extends Stack {
         DATABASE_URL: process.env.DATABASE_URL!,
       },
     });
+    const notifyAdminHandler = new NodejsFunction(this, "NotifyAdminHandler", {
+      runtime: Runtime.NODEJS_18_X,
+      entry: "lambda/notifyAdmin.ts",
+      depsLockFilePath: "package-lock.json",
+      environment: {
+        TABLE_NAME: connectionsTable.tableName,
+        DATABASE_URL: process.env.DATABASE_URL!,
+      },
+    });
 
     // Grant permissions to lambdas
     connectionsTable.grantReadWriteData(connectHandler);
@@ -87,6 +96,7 @@ export class WebSocketNotificationStack extends Stack {
     connectionsTable.grantReadWriteData(messageHandler);
     connectionsTable.grantReadWriteData(defaultHandler);
     connectionsTable.grantReadWriteData(sendNotificationHandler);
+    connectionsTable.grantReadWriteData(notifyAdminHandler);
 
     // Allow Lambda to call API Gateway management API
     const apiPermission = new PolicyStatement({
@@ -96,6 +106,7 @@ export class WebSocketNotificationStack extends Stack {
 
     messageHandler.addToRolePolicy(apiPermission);
     sendNotificationHandler.addToRolePolicy(apiPermission);
+    notifyAdminHandler.addToRolePolicy(apiPermission);
 
     // WebSocket API
     const wsApi = new WebSocketApi(this, "WebSocketAPI", {
@@ -117,6 +128,12 @@ export class WebSocketNotificationStack extends Stack {
       integration: new WebSocketLambdaIntegration(
         "SendNotificationIntegration",
         sendNotificationHandler
+      ),
+    });
+    wsApi.addRoute("notifyAdmin", {
+      integration: new WebSocketLambdaIntegration(
+        "NotifyAdminIntegration",
+        notifyAdminHandler
       ),
     });
 

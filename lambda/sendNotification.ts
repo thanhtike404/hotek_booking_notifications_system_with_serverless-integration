@@ -13,6 +13,10 @@ import { Client as PgClient } from "pg";
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
+import {getConnectionsByUserId} from './utils/dynamoClient'
+import { sendToConnection } from "./utils/webSocket";
+
+
 
 export const handler = async (
   event: APIGatewayProxyEvent
@@ -44,21 +48,17 @@ export const handler = async (
 
     console.log(`🔍 Looking for connections for userId: ${userId}`);
 
-    const command: QueryCommandInput = {
-      TableName: process.env.TABLE_NAME!,
-      IndexName: "userId-index",
-      KeyConditionExpression: "userId = :userId",
-      ExpressionAttributeValues: {
-        ":userId": userId,
-      },
-    };
+    const queryResponse =await getConnectionsByUserId(userId)
+  
+    const items: any[] = queryResponse;
 
-    const { Items } = await docClient.send(new QueryCommand(command));
-    console.log("📊 DynamoDB query result:", JSON.stringify(Items, null, 2));
-    console.log(`📊 Number of connections found: ${Items?.length || 0}`);
+    
 
-    if (Items && Items.length > 0) {
-      const connectionId = Items[0].connectionId;
+    console.log("📊 DynamoDB query result:", JSON.stringify(items, null, 2));
+    console.log(`📊 Number of connections found: ${items?.length || 0}`);
+
+    if (items && items.length > 0) {
+      const connectionId = items[0].connectionId as string;
       console.log(`🔌 Using connectionId: ${connectionId}`);
 
       const domainName = event.requestContext?.domainName;
@@ -67,18 +67,11 @@ export const handler = async (
       if (!domainName || !stage) {
         throw new Error("Missing requestContext domainName or stage");
       }
-
-      const apiGatewayManagementApi = new ApiGatewayManagementApiClient({
-        endpoint: `https://${domainName}/${stage}`,
-      });
-
-      const postToConnectionCommand = new PostToConnectionCommand({
-        ConnectionId: connectionId,
-        Data: JSON.stringify({ message }),
-      });
-
+      
       try {
-        await apiGatewayManagementApi.send(postToConnectionCommand);
+        // await apiGatewayManagementApi.send(postToConnectionCommand);
+        // await apiGatewayManagementApi.send(postToConnectionCommand);
+        await sendToConnection(event,connectionId,message,userId,"sendNotification");
         console.log("✅ Message sent successfully via WebSocket");
 
         await saveNotificationToDatabase(userId, message);
