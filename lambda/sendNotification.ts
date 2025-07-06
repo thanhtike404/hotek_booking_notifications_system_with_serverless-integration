@@ -1,22 +1,16 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
-  DynamoDBDocumentClient,
-  QueryCommand,
-  QueryCommandInput,
+  DynamoDBDocumentClient
 } from "@aws-sdk/lib-dynamodb";
-import {
-  ApiGatewayManagementApiClient,
-  PostToConnectionCommand,
-} from "@aws-sdk/client-apigatewaymanagementapi";
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { Client as PgClient } from "pg";
+import { getConnectionsByUserId } from "./utils/dynamoClient";
+import { sendToConnection } from "./utils/webSocket";
+import { sendToAdmins } from "./utils/sendToAdmins";
+import cuid from "cuid";
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
-import {getConnectionsByUserId} from './utils/dynamoClient'
-import { sendToConnection } from "./utils/webSocket";
-
-
 
 export const handler = async (
   event: APIGatewayProxyEvent
@@ -46,65 +40,70 @@ export const handler = async (
       };
     }
 
-    console.log(`🔍 Looking for connections for userId: ${userId}`);
+    // WebSocket domain info
+    const domainName = event.requestContext?.domainName;
+    const stage = event.requestContext?.stage;
 
-    const queryResponse =await getConnectionsByUserId(userId)
-  
-    const items: any[] = queryResponse;
+    if (!domainName || !stage) {
+      throw new Error("Missing requestContext domainName or stage");
+    }
 
-    
+    const connections = await getConnectionsByUserId(userId);
 
-    console.log("📊 DynamoDB query result:", JSON.stringify(items, null, 2));
-    console.log(`📊 Number of connections found: ${items?.length || 0}`);
+    const pgClient = new PgClient({
+      connectionString: process.env.DATABASE_URL,
+    });
 
-    if (items && items.length > 0) {
-      const connectionId = items[0].connectionId as string;
-      console.log(`🔌 Using connectionId: ${connectionId}`);
+    await pgClient.connect();
 
-      const domainName = event.requestContext?.domainName;
-      const stage = event.requestContext?.stage;
-
-      if (!domainName || !stage) {
-        throw new Error("Missing requestContext domainName or stage");
+    try {
+      // 1. Try WebSocket if there’s an active connection
+      if (connections && connections.length > 0) {
+        const connectionId = connections[0].connectionId as string;
+        console.log(`🔌 Sending WS message to user connection: ${connectionId}`);
+        await sendToConnection(event, connectionId, message, userId, "sendNotification");
+      } else {
+        console.log("❌ No active user WebSocket connections found");
       }
-      
-      try {
-        // await apiGatewayManagementApi.send(postToConnectionCommand);
-        // await apiGatewayManagementApi.send(postToConnectionCommand);
-        await sendToConnection(event,connectionId,message,userId,"sendNotification");
-        console.log("✅ Message sent successfully via WebSocket");
 
-        await saveNotificationToDatabase(userId, message);
+      // 2. Send message to all admin users
+      await sendToAdmins(message, event);
 
-        return {
-          statusCode: 200,
-          body: JSON.stringify({
-            success: true,
-            delivery: "websocket_and_database",
-          }),
-        };
-      } catch (wsError: any) {
-        console.error("❌ WebSocket send error:", wsError);
+      // 3. Save notifications to DB for all admin users
+      const result = await pgClient.query(
+        `SELECT id FROM "User" WHERE role = 'ADMIN'`
+      );
 
-        await saveNotificationToDatabase(userId, message);
+      const adminUsers = result.rows as { id: string }[];
 
-        return {
-          statusCode: 200,
-          body: JSON.stringify({
-            success: true,
-            delivery: "database_only",
-            error: wsError.message,
-          }),
-        };
+      for (const admin of adminUsers) {
+        await saveNotificationToDatabase(pgClient, admin.id, message);
       }
-    } else {
-      console.log("❌ No active connections found - saving to database only");
-      await saveNotificationToDatabase(userId, message);
 
       return {
         statusCode: 200,
-        body: JSON.stringify({ success: true, delivery: "database_only" }),
+        body: JSON.stringify({
+          success: true,
+          delivery: "websocket_and_database",
+        }),
       };
+    } catch (wsError: any) {
+      console.error("❌ Error during WebSocket or DB flow:", wsError);
+
+      // fallback to save notification for original user only
+      await saveNotificationToDatabase(pgClient, userId, message);
+
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          success: true,
+          delivery: "database_only",
+          error: wsError.message,
+        }),
+      };
+    } finally {
+      await pgClient.end();
+      console.log("🔌 PostgreSQL connection closed");
     }
   } catch (err: any) {
     console.error("💥 Error in sendNotification handler:", err);
@@ -118,49 +117,18 @@ export const handler = async (
   }
 };
 
-import cuid from "cuid";
+async function saveNotificationToDatabase(
+  pgClient: PgClient,
+  userId: string,
+  message: string
+) {
+  console.log(`💾 Saving notification for userId: ${userId}`);
 
-async function saveNotificationToDatabase(userId: string, message: string) {
-  console.log('💾 Attempting to save to PostgreSQL database...');
-  console.log('📝 DATABASE_URL exists:', !!process.env.DATABASE_URL);
-  
-  const pgClient = new PgClient({
-    connectionString: process.env.DATABASE_URL,
-  });
-  
-  try {
-    console.log('🔌 Connecting to PostgreSQL...');
-    await pgClient.connect();
-    console.log('✅ Connected to PostgreSQL');
-    
-    const id = cuid();
-    const result = await pgClient.query(
-      'INSERT INTO "Notification" ("id", "userId", "message", "isRead", "createdAt") VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [id, userId, message, false, new Date()]
-    );
-    
-    console.log('✅ Notification saved to database:', JSON.stringify(result.rows[0], null, 2));
-    console.log('📊 Rows affected:', result.rowCount);
-    
-  } catch (dbError) {
-    console.error('💥 Database error:', dbError);
-    console.error('🔍 Error details:', {
-      // @ts-ignore
-      name: dbError.name,
-      // @ts-ignore
+  const id = cuid();
+  const result = await pgClient.query(
+    'INSERT INTO "Notification" ("id", "userId", "message", "isRead", "createdAt") VALUES ($1, $2, $3, $4, $5) RETURNING *',
+    [id, userId, message, false, new Date()]
+  );
 
-      message: dbError.message,
-      // @ts-ignore
-
-      stack: dbError.stack
-    });
-    throw dbError;
-  } finally {
-    try {
-      await pgClient.end();
-      console.log('🔌 PostgreSQL connection closed');
-    } catch (closeError) {
-      console.error('❌ Error closing PostgreSQL connection:', closeError);
-    }
-  }
+  console.log("✅ Notification saved:", JSON.stringify(result.rows[0], null, 2));
 }

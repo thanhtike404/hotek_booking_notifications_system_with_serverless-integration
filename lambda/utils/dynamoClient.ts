@@ -11,7 +11,7 @@ import {
     QueryCommand,
   } from "@aws-sdk/lib-dynamodb";
   import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-  
+  import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
   // Initialize the DynamoDB Document Client
   const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
   
@@ -43,3 +43,16 @@ import {
     }
   }
   
+  export async function deleteConnectionById(connectionId: string): Promise<void> {
+  try {
+    await docClient.send(
+      new DeleteCommand({
+        TableName: process.env.TABLE_NAME!,
+        Key: { connectionId },
+      })
+    );
+    console.log(`🧹 Stale connection detected. Deleted connectionId: ${connectionId}`);
+  } catch (error) {
+    console.error(`❌ Failed to delete connectionId ${connectionId}:`, error);
+  }
+}
