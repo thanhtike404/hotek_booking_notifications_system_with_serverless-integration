@@ -23,19 +23,21 @@ export async function sendToAdmins(message: string, event: APIGatewayProxyEvent)
   for (const admin of admins) {
     const connections = await getConnectionsByUserId(admin.id);
 
-    for (const conn of connections) {
-      try {
-        await sendToConnection(event, conn.connectionId, message, admin.id, "sendNotification");
-        await saveNotificationToDatabase(admin.id, message);
-      } catch (err) {
-        console.error(`❌ Failed to send to admin ${admin.id}:`, err);
-        await saveNotificationToDatabase(admin.id, message);
-      }
-    }
+    // Save notification to database once per admin (regardless of connections)
+    await saveNotificationToDatabase(admin.id, message);
 
-    if (connections.length === 0) {
-      console.log(`📭 No active connection for admin ${admin.id}`);
-      await saveNotificationToDatabase(admin.id, message);
+    // Send WebSocket messages to all admin connections (if any)
+    if (connections.length > 0) {
+      for (const conn of connections) {
+        try {
+          await sendToConnection(event, conn.connectionId, message, admin.id, "sendNotification");
+          console.log(`✅ Sent WebSocket message to admin ${admin.id} connection ${conn.connectionId}`);
+        } catch (err) {
+          console.error(`❌ Failed to send WebSocket to admin ${admin.id} connection ${conn.connectionId}:`, err);
+        }
+      }
+    } else {
+      console.log(`📭 No active connection for admin ${admin.id}, notification saved to DB only`);
     }
   }
 
